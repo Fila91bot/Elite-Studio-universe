@@ -1,0 +1,8 @@
+{
+  "name": "Elite Studio",
+  "description": "A high-end studio environment showcasing the latest Gemini 3 models, Live Audio, Veo Video, and high-quality image generation with built-in billing/key selection support.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
