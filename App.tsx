@@ -9,7 +9,7 @@ import ImageLab from './components/ImageLab';
 import VideoLab from './components/VideoLab';
 import SettingsLab from './components/SettingsLab';
 import ApiKeyGuard from './components/ApiKeyGuard';
-import { GeminiService } from './services/geminiService';
+import { GeminiService, AuthError } from './services/geminiService';
 
 const USAGE_STORAGE_KEY = 'gemini_studio_usage_stats';
 const FREE_VIDEO_LIMIT = 2;
@@ -20,18 +20,22 @@ const App: React.FC = () => {
   const [checkingKey, setCheckingKey] = useState(true);
   
   const [usageStats, setUsageStats] = useState<UsageStats>(() => {
-    const saved = localStorage.getItem(USAGE_STORAGE_KEY);
-    const now = new Date();
-    const defaultStats = { videoCount: 0, month: now.getMonth(), year: now.getFullYear() };
-    
-    if (saved) {
-      const parsed = JSON.parse(saved) as UsageStats;
-      if (parsed.month !== now.getMonth() || parsed.year !== now.getFullYear()) {
-        return defaultStats;
+    try {
+      const saved = localStorage.getItem(USAGE_STORAGE_KEY);
+      const now = new Date();
+      const defaultStats = { videoCount: 0, month: now.getMonth(), year: now.getFullYear() };
+      
+      if (saved) {
+        const parsed = JSON.parse(saved) as UsageStats;
+        if (parsed.month !== now.getMonth() || parsed.year !== now.getFullYear()) {
+          return defaultStats;
+        }
+        return parsed;
       }
-      return parsed;
+      return defaultStats;
+    } catch (e) {
+      return { videoCount: 0, month: new Date().getMonth(), year: new Date().getFullYear() };
     }
-    return defaultStats;
   });
 
   const [videoTasks, setVideoTasks] = useState<VideoTask[]>([]);
@@ -41,17 +45,25 @@ const App: React.FC = () => {
   }, [usageStats]);
 
   const checkApiKey = useCallback(async () => {
+    // Timeout osigurač: makni loading nakon 2.5 sekunde čak i ako API provjera zapne
+    const timer = setTimeout(() => {
+      setCheckingKey(false);
+    }, 2500);
+
     try {
       const studio = (window as any).aistudio;
       if (studio && typeof studio.hasSelectedApiKey === 'function') {
         const hasKey = await studio.hasSelectedApiKey();
         setIsApiKeyValidated(hasKey);
       } else {
-        setIsApiKeyValidated(!!process.env.API_KEY);
+        // Sigurna provjera varijable process
+        const envKey = (typeof process !== 'undefined' && process.env?.API_KEY) ? process.env.API_KEY : '';
+        setIsApiKeyValidated(!!envKey);
       }
     } catch (err) {
       console.error("API Key Check Error:", err);
     } finally {
+      clearTimeout(timer);
       setCheckingKey(false);
     }
   }, []);
@@ -59,6 +71,14 @@ const App: React.FC = () => {
   useEffect(() => {
     checkApiKey();
   }, [checkApiKey]);
+
+  const handleOpenKeySelection = async () => {
+    const studio = (window as any).aistudio;
+    if (studio && typeof studio.openSelectKey === 'function') {
+      await studio.openSelectKey();
+      setIsApiKeyValidated(true);
+    }
+  };
 
   const handleKeySelected = () => {
     setIsApiKeyValidated(true);
@@ -110,8 +130,18 @@ const App: React.FC = () => {
       }
     } catch (err) {
       console.error("Video task failed:", err);
+      
+      if (err instanceof AuthError) {
+        setIsApiKeyValidated(false); 
+        handleOpenKeySelection();
+      }
+
       setVideoTasks(prev => prev.map(t => 
-        t.id === taskId ? { ...t, status: 'failed', progressMessage: 'Failed to generate' } : t
+        t.id === taskId ? { 
+          ...t, 
+          status: 'failed', 
+          progressMessage: err instanceof Error ? err.message : 'Generation failed' 
+        } : t
       ));
     }
   };
@@ -119,16 +149,24 @@ const App: React.FC = () => {
   if (checkingKey) {
     return (
       <div className="flex items-center justify-center h-screen bg-slate-950">
-        <div className="flex flex-col items-center gap-4">
-          <div className="w-12 h-12 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
-          <p className="text-slate-400 font-medium">Authenticating Studio...</p>
+        <div className="flex flex-col items-center gap-6">
+          <div className="relative">
+            <div className="w-16 h-16 border-4 border-slate-800 rounded-full"></div>
+            <div className="absolute top-0 left-0 w-16 h-16 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
+          </div>
+          <div className="text-center">
+            <p className="text-white font-bold tracking-widest uppercase text-xs">Initializing Elite Studio</p>
+            <p className="text-slate-500 text-[10px] mt-2 font-mono">Verifying hardware & API tunnel...</p>
+          </div>
         </div>
       </div>
     );
   }
 
   const hasFreeCredits = usageStats.videoCount < FREE_VIDEO_LIMIT;
-  if (!isApiKeyValidated && !hasFreeCredits) {
+  const isPremiumView = [AppView.VIDEO, AppView.IMAGE].includes(activeView);
+  
+  if (isPremiumView && !isApiKeyValidated && !hasFreeCredits) {
     return <ApiKeyGuard onKeySelected={handleKeySelected} />;
   }
 
@@ -142,13 +180,7 @@ const App: React.FC = () => {
           tasks={videoTasks} 
           onGenerate={startVideoGeneration}
           freeCreditsRemaining={isApiKeyValidated ? Infinity : FREE_VIDEO_LIMIT - usageStats.videoCount}
-          onOpenBilling={async () => {
-            const studio = (window as any).aistudio;
-            if (studio) {
-              await studio.openSelectKey();
-              handleKeySelected();
-            }
-          }}
+          onOpenBilling={handleOpenKeySelection}
         />
       );
       case AppView.SETTINGS: return <SettingsLab />;

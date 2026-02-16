@@ -57,31 +57,55 @@ export async function decodeAudioData(
 
 export class GeminiService {
   private static getAI() {
-    // Uvek kreiramo novu instancu kako bismo koristili najnoviji API ključ
-    return new GoogleGenAI({ apiKey: process.env.API_KEY as string });
+    let apiKey = '';
+    
+    // Sigurna provjera varijable okruženja
+    try {
+      apiKey = (typeof process !== 'undefined' && process.env?.API_KEY) 
+        ? process.env.API_KEY 
+        : '';
+    } catch (e) {
+      console.warn("Could not access process.env.API_KEY directly.");
+    }
+
+    if (!apiKey) {
+      console.warn("GeminiService: No API Key found in environment.");
+    }
+    
+    return new GoogleGenAI({ apiKey: apiKey });
   }
 
   public static async handleApiError(err: any): Promise<never> {
-    const errorMsg = err?.message || JSON.stringify(err);
-    console.error("Gemini API Error Context:", err);
-
-    // Ako model nije pronađen, verovatno je problem u projektu/ključu koji nema pristup premium modelima
-    if (errorMsg.includes("Requested entity was not found") || errorMsg.includes("404")) {
-      throw new AuthError("Pristup odbijen: Ovaj model zahteva plaćeni API ključ iz specifičnog projekta. Molimo odaberite ponovo.");
+    console.error("Gemini API Error Raw:", err);
+    
+    let errorMsg = "";
+    try {
+      if (typeof err === 'string') {
+        const parsed = JSON.parse(err);
+        errorMsg = parsed?.error?.message || err;
+      } else {
+        errorMsg = err?.message || JSON.stringify(err);
+      }
+    } catch (e) {
+      errorMsg = err?.message || String(err);
     }
 
-    if (errorMsg.includes("RESOURCE_EXHAUSTED") || errorMsg.includes("429")) {
-      let waitSeconds = undefined;
+    if (errorMsg.includes("Requested entity was not found") || errorMsg.includes("404")) {
+      throw new AuthError("Odabrani API ključ nema pristup premium modelima. Potreban je Billing račun.");
+    }
+
+    if (errorMsg.includes("RESOURCE_EXHAUSTED") || errorMsg.includes("429") || errorMsg.includes("quota")) {
+      let waitSeconds = 60;
       const match = errorMsg.match(/retry in ([\d\.]+)s/);
       if (match) waitSeconds = Math.ceil(parseFloat(match[1]));
-      throw new QuotaError("Besplatna kvota potrošena. Povežite billing račun da biste nastavili koristiti ove modele.", waitSeconds);
+      throw new QuotaError("Kvota potrošena (429). Pokušajte ponovno uskoro.", waitSeconds);
     }
 
-    if (errorMsg.includes("API key not valid")) {
-      throw new AuthError("API ključ nije validan. Molimo odaberite validan ključ.");
+    if (errorMsg.includes("API key not valid") || errorMsg.includes("401")) {
+      throw new AuthError("API ključ nije validan. Provjerite .env datoteku.");
     }
 
-    throw err;
+    throw new Error(errorMsg);
   }
 
   static async chatStream(
@@ -93,22 +117,10 @@ export class GeminiService {
   ): Promise<string> {
     try {
       const ai = this.getAI();
-      const parts: any[] = [{ text: message }];
-      
-      if (imageB64) {
-        const [mime, data] = imageB64.split(';base64,');
-        parts.unshift({
-          inlineData: {
-            mimeType: mime.split(':')[1],
-            data: data
-          }
-        });
-      }
-
       const chat = ai.chats.create({
         model: model,
         config: {
-          systemInstruction: "You are the Elite Studio AI. You provide world-class creative and technical assistance. Be concise, brilliant, and professional.",
+          systemInstruction: "You are Elite Studio AI, a professional creative assistant.",
           tools: useSearch ? [{ googleSearch: {} }] : undefined,
         }
       });
@@ -133,12 +145,11 @@ export class GeminiService {
       const ai = this.getAI();
       await ai.models.generateContent({
         model: model,
-        contents: "test connection",
-        config: { maxOutputTokens: 5 }
+        contents: "test",
+        config: { maxOutputTokens: 1 }
       });
       return true;
     } catch (e) {
-      console.warn(`Test za ${model} nije uspeo:`, e);
       return false;
     }
   }
@@ -158,12 +169,12 @@ export class GeminiService {
       const response = await ai.models.generateContent({
         model: modelName,
         contents: { parts: [{ text: prompt }] },
-        config: { imageConfig: { aspectRatio: "1:1", imageSize: modelType === 'pro' ? "1K" : undefined } }
+        config: { imageConfig: { aspectRatio: "1:1" } }
       });
       for (const part of response.candidates?.[0]?.content?.parts || []) {
         if (part.inlineData) return `data:image/png;base64,${part.inlineData.data}`;
       }
-      throw new Error("Nema podataka o slici od modela.");
+      throw new Error("No image data returned.");
     } catch (err) {
       return this.handleApiError(err);
     }
@@ -181,36 +192,31 @@ export class GeminiService {
       const ai = this.getAI();
       const modelName = useHighQualityModel ? 'veo-3.1-generate-preview' : 'veo-3.1-fast-generate-preview';
       
-      if (onProgress) onProgress(`Pokretanje ${modelName} motora...`);
+      if (onProgress) onProgress(`Contacting ${modelName}...`);
       
-      const generationParams: any = {
+      const config: any = {
         model: modelName,
-        prompt: prompt || 'Animate this with cinematic motion',
+        prompt: prompt || 'Cinematic sequence',
         config: { numberOfVideos: 1, resolution, aspectRatio }
       };
 
       if (sourceImage) {
-        const [header, data] = sourceImage.split(';base64,');
-        generationParams.image = { 
-          imageBytes: data, 
-          mimeType: header.split(':')[1] || 'image/png' 
+        config.image = { 
+          imageBytes: sourceImage.split(',')[1], 
+          mimeType: sourceImage.split(';')[0].split(':')[1] 
         };
       }
 
-      let operation = await ai.models.generateVideos(generationParams);
+      let operation = await ai.models.generateVideos(config);
       
       while (!operation.done) {
         await new Promise(resolve => setTimeout(resolve, 10000));
         operation = await ai.operations.getVideosOperation({ operation: operation });
-        if (onProgress) onProgress("Sinteza temporalne konzistentnosti...");
+        if (onProgress) onProgress("Veo is rendering frames...");
       }
 
       const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
-      if (!downloadLink) throw new Error("Generisanje videa završeno ali link nije vraćen.");
-
-      const response = await fetch(`${downloadLink}&key=${process.env.API_KEY}`);
-      if (!response.ok) throw new Error(`Greška pri preuzimanju videa: ${response.statusText}`);
-      
+      const response = await fetch(`${downloadLink}&key=${(typeof process !== 'undefined' ? process.env.API_KEY : '')}`);
       const blob = await response.blob();
       return URL.createObjectURL(blob);
     } catch (err) {
@@ -218,12 +224,7 @@ export class GeminiService {
     }
   }
 
-  static async connectLive(callbacks: { 
-    onOpen?: () => void; 
-    onMessage?: (message: LiveServerMessage) => void; 
-    onError?: (e: any) => void; 
-    onClose?: (e: any) => void; 
-  }) {
+  static async connectLive(callbacks: { onOpen?: () => void; onMessage?: (message: LiveServerMessage) => void; onError?: (e: any) => void; onClose?: (e: any) => void; }) {
     const ai = this.getAI();
     return ai.live.connect({
       model: 'gemini-2.5-flash-native-audio-preview-12-2025',
@@ -231,7 +232,7 @@ export class GeminiService {
         onopen: callbacks.onOpen || (() => {}),
         onmessage: callbacks.onMessage || (() => {}),
         onerror: (e) => { 
-          this.handleApiError(e).catch(() => {}); 
+          this.handleApiError(e).catch(() => {});
           if (callbacks.onError) callbacks.onError(e); 
         },
         onclose: callbacks.onClose || (() => {}),
@@ -239,7 +240,6 @@ export class GeminiService {
       config: {
         responseModalities: [Modality.AUDIO],
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } } },
-        systemInstruction: 'You are an upbeat and creative studio producer. You can see the user through their camera. Be helpful and visionary.',
       },
     });
   }
