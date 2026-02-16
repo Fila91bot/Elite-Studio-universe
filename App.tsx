@@ -18,6 +18,7 @@ const App: React.FC = () => {
   const [activeView, setActiveView] = useState<AppView>(AppView.CHAT);
   const [isApiKeyValidated, setIsApiKeyValidated] = useState<boolean>(false);
   const [checkingKey, setCheckingKey] = useState(true);
+  const [isStandalone, setIsStandalone] = useState(false);
   
   const [usageStats, setUsageStats] = useState<UsageStats>(() => {
     try {
@@ -45,23 +46,27 @@ const App: React.FC = () => {
   }, [usageStats]);
 
   const checkApiKey = useCallback(async () => {
-    // Timeout osigurač: makni loading nakon 2.5 sekunde čak i ako API provjera zapne
+    // Sigurnosni timeout od 2 sekunde
     const timer = setTimeout(() => {
       setCheckingKey(false);
-    }, 2500);
+    }, 2000);
 
     try {
       const studio = (window as any).aistudio;
       if (studio && typeof studio.hasSelectedApiKey === 'function') {
+        // Sandbox okruženje
         const hasKey = await studio.hasSelectedApiKey();
         setIsApiKeyValidated(hasKey);
+        setIsStandalone(false);
       } else {
-        // Sigurna provjera varijable process
+        // Lokalno/Standalone okruženje
+        setIsStandalone(true);
         const envKey = (typeof process !== 'undefined' && process.env?.API_KEY) ? process.env.API_KEY : '';
         setIsApiKeyValidated(!!envKey);
       }
     } catch (err) {
-      console.error("API Key Check Error:", err);
+      console.warn("API Key Check failed, defaulting to Restricted Mode.");
+      setIsStandalone(true);
     } finally {
       clearTimeout(timer);
       setCheckingKey(false);
@@ -77,6 +82,9 @@ const App: React.FC = () => {
     if (studio && typeof studio.openSelectKey === 'function') {
       await studio.openSelectKey();
       setIsApiKeyValidated(true);
+    } else {
+      // Ako smo lokalno, samo osvježi provjeru
+      checkApiKey();
     }
   };
 
@@ -98,9 +106,9 @@ const App: React.FC = () => {
     const taskId = Date.now().toString();
     const newTask: VideoTask = {
       id: taskId,
-      prompt: prompt || 'Animating image...',
+      prompt: prompt || 'Mastering Cinematic sequence...',
       status: 'processing',
-      progressMessage: 'Initializing pipeline...',
+      progressMessage: 'Initializing Neural Pipeline...',
       timestamp: Date.now(),
       resolution
     };
@@ -122,7 +130,7 @@ const App: React.FC = () => {
       );
 
       setVideoTasks(prev => prev.map(t => 
-        t.id === taskId ? { ...t, status: 'completed', url, progressMessage: 'Finished' } : t
+        t.id === taskId ? { ...t, status: 'completed', url, progressMessage: 'Sequence Finalized' } : t
       ));
       
       if (!isApiKeyValidated) {
@@ -140,7 +148,7 @@ const App: React.FC = () => {
         t.id === taskId ? { 
           ...t, 
           status: 'failed', 
-          progressMessage: err instanceof Error ? err.message : 'Generation failed' 
+          progressMessage: err instanceof Error ? err.message : 'Pipeline Error' 
         } : t
       ));
     }
@@ -149,25 +157,20 @@ const App: React.FC = () => {
   if (checkingKey) {
     return (
       <div className="flex items-center justify-center h-screen bg-slate-950">
-        <div className="flex flex-col items-center gap-6">
-          <div className="relative">
-            <div className="w-16 h-16 border-4 border-slate-800 rounded-full"></div>
-            <div className="absolute top-0 left-0 w-16 h-16 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
-          </div>
-          <div className="text-center">
-            <p className="text-white font-bold tracking-widest uppercase text-xs">Initializing Elite Studio</p>
-            <p className="text-slate-500 text-[10px] mt-2 font-mono">Verifying hardware & API tunnel...</p>
-          </div>
+        <div className="flex flex-col items-center gap-6 animate-pulse">
+          <div className="w-16 h-16 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
+          <p className="text-indigo-400 font-bold tracking-widest uppercase text-xs">Validating Environment</p>
         </div>
       </div>
     );
   }
 
   const hasFreeCredits = usageStats.videoCount < FREE_VIDEO_LIMIT;
-  const isPremiumView = [AppView.VIDEO, AppView.IMAGE].includes(activeView);
+  const isPremiumView = [AppView.VIDEO, AppView.IMAGE, AppView.LIVE].includes(activeView);
   
+  // Ako nema ključa i nema kredita, pokaži Guard
   if (isPremiumView && !isApiKeyValidated && !hasFreeCredits) {
-    return <ApiKeyGuard onKeySelected={handleKeySelected} />;
+    return <ApiKeyGuard onKeySelected={handleKeySelected} isStandalone={isStandalone} />;
   }
 
   const renderContent = () => {
@@ -191,7 +194,7 @@ const App: React.FC = () => {
   const activeTasksCount = videoTasks.filter(t => t.status === 'processing').length;
 
   return (
-    <div className="flex h-screen bg-slate-950 overflow-hidden">
+    <div className="flex h-screen bg-slate-950 overflow-hidden text-slate-200">
       <Sidebar activeView={activeView} onViewChange={setActiveView} />
       <div className="flex-1 flex flex-col min-w-0">
         <Header activeView={activeView} activeTasksCount={activeTasksCount} />

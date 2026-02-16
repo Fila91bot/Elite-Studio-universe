@@ -56,27 +56,28 @@ export async function decodeAudioData(
 }
 
 export class GeminiService {
-  private static getAI() {
-    let apiKey = '';
-    
-    // Sigurna provjera varijable okruženja
-    try {
-      apiKey = (typeof process !== 'undefined' && process.env?.API_KEY) 
-        ? process.env.API_KEY 
-        : '';
-    } catch (e) {
-      console.warn("Could not access process.env.API_KEY directly.");
-    }
+  private static getAPIKey(): string {
+    // 1. Provjeri process.env (Vite/Node standard)
+    const envKey = (typeof process !== 'undefined' && process.env?.API_KEY) ? process.env.API_KEY : '';
+    if (envKey) return envKey;
 
-    if (!apiKey) {
-      console.warn("GeminiService: No API Key found in environment.");
+    // 2. Provjeri globalni window (Shim za neke sandboxove)
+    const windowKey = (window as any).process?.env?.API_KEY;
+    if (windowKey) return windowKey;
+
+    return '';
+  }
+
+  private static getAI() {
+    const key = this.getAPIKey();
+    if (!key) {
+      console.warn("GeminiService: API Key missing. App will enter Restricted Mode.");
     }
-    
-    return new GoogleGenAI({ apiKey: apiKey });
+    return new GoogleGenAI({ apiKey: key });
   }
 
   public static async handleApiError(err: any): Promise<never> {
-    console.error("Gemini API Error Raw:", err);
+    console.error("Gemini API Error:", err);
     
     let errorMsg = "";
     try {
@@ -91,18 +92,18 @@ export class GeminiService {
     }
 
     if (errorMsg.includes("Requested entity was not found") || errorMsg.includes("404")) {
-      throw new AuthError("Odabrani API ključ nema pristup premium modelima. Potreban je Billing račun.");
+      throw new AuthError("Vaš API ključ nema pristup ovom modelu. To se događa ako koristite 'Free Tier' ključ za 'Veo' ili 'Imagen 4' modele.");
     }
 
     if (errorMsg.includes("RESOURCE_EXHAUSTED") || errorMsg.includes("429") || errorMsg.includes("quota")) {
       let waitSeconds = 60;
       const match = errorMsg.match(/retry in ([\d\.]+)s/);
       if (match) waitSeconds = Math.ceil(parseFloat(match[1]));
-      throw new QuotaError("Kvota potrošena (429). Pokušajte ponovno uskoro.", waitSeconds);
+      throw new QuotaError("Kvota je potrošena (429). Molimo pričekajte ili koristite Pay-as-you-go ključ.", waitSeconds);
     }
 
     if (errorMsg.includes("API key not valid") || errorMsg.includes("401")) {
-      throw new AuthError("API ključ nije validan. Provjerite .env datoteku.");
+      throw new AuthError("API ključ nije validan. Molimo provjerite svoju .env datoteku.");
     }
 
     throw new Error(errorMsg);
@@ -120,7 +121,7 @@ export class GeminiService {
       const chat = ai.chats.create({
         model: model,
         config: {
-          systemInstruction: "You are Elite Studio AI, a professional creative assistant.",
+          systemInstruction: "You are the Elite Studio AI. Professional, creative, and precise.",
           tools: useSearch ? [{ googleSearch: {} }] : undefined,
         }
       });
@@ -141,6 +142,8 @@ export class GeminiService {
   }
 
   static async testModelAccess(model: string): Promise<boolean> {
+    const key = this.getAPIKey();
+    if (!key) return false;
     try {
       const ai = this.getAI();
       await ai.models.generateContent({
@@ -174,7 +177,7 @@ export class GeminiService {
       for (const part of response.candidates?.[0]?.content?.parts || []) {
         if (part.inlineData) return `data:image/png;base64,${part.inlineData.data}`;
       }
-      throw new Error("No image data returned.");
+      throw new Error("Missing image payload.");
     } catch (err) {
       return this.handleApiError(err);
     }
@@ -192,11 +195,11 @@ export class GeminiService {
       const ai = this.getAI();
       const modelName = useHighQualityModel ? 'veo-3.1-generate-preview' : 'veo-3.1-fast-generate-preview';
       
-      if (onProgress) onProgress(`Contacting ${modelName}...`);
+      if (onProgress) onProgress(`Connecting to ${modelName}...`);
       
       const config: any = {
         model: modelName,
-        prompt: prompt || 'Cinematic sequence',
+        prompt: prompt || 'Cinematic movement',
         config: { numberOfVideos: 1, resolution, aspectRatio }
       };
 
@@ -212,11 +215,12 @@ export class GeminiService {
       while (!operation.done) {
         await new Promise(resolve => setTimeout(resolve, 10000));
         operation = await ai.operations.getVideosOperation({ operation: operation });
-        if (onProgress) onProgress("Veo is rendering frames...");
+        if (onProgress) onProgress("Veo engine is rendering frame sequences...");
       }
 
+      const key = this.getAPIKey();
       const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
-      const response = await fetch(`${downloadLink}&key=${(typeof process !== 'undefined' ? process.env.API_KEY : '')}`);
+      const response = await fetch(`${downloadLink}&key=${key}`);
       const blob = await response.blob();
       return URL.createObjectURL(blob);
     } catch (err) {
@@ -240,6 +244,7 @@ export class GeminiService {
       config: {
         responseModalities: [Modality.AUDIO],
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } } },
+        systemInstruction: 'You are the Elite Studio producer, guiding real-time interaction.',
       },
     });
   }
