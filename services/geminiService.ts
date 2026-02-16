@@ -10,6 +10,13 @@ export class QuotaError extends Error {
   }
 }
 
+export class AuthError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AuthError';
+  }
+}
+
 export function decode(base64: string) {
   const binaryString = atob(base64);
   const len = binaryString.length;
@@ -50,22 +57,28 @@ export async function decodeAudioData(
 
 export class GeminiService {
   private static getAI() {
+    // Uvek kreiramo novu instancu kako bismo koristili najnoviji API ključ
     return new GoogleGenAI({ apiKey: process.env.API_KEY as string });
   }
 
   public static async handleApiError(err: any): Promise<never> {
-    const errorMsg = err?.message || String(err);
+    const errorMsg = err?.message || JSON.stringify(err);
     console.error("Gemini API Error Context:", err);
+
+    // Ako model nije pronađen, verovatno je problem u projektu/ključu koji nema pristup premium modelima
+    if (errorMsg.includes("Requested entity was not found") || errorMsg.includes("404")) {
+      throw new AuthError("Pristup odbijen: Ovaj model zahteva plaćeni API ključ iz specifičnog projekta. Molimo odaberite ponovo.");
+    }
 
     if (errorMsg.includes("RESOURCE_EXHAUSTED") || errorMsg.includes("429")) {
       let waitSeconds = undefined;
       const match = errorMsg.match(/retry in ([\d\.]+)s/);
       if (match) waitSeconds = Math.ceil(parseFloat(match[1]));
-      throw new QuotaError("Quota Exceeded. Please upgrade to a Paid Billing Project for these models.", waitSeconds);
+      throw new QuotaError("Besplatna kvota potrošena. Povežite billing račun da biste nastavili koristiti ove modele.", waitSeconds);
     }
 
-    if (errorMsg.includes("Requested entity was not found") || errorMsg.includes("404")) {
-      throw new Error("Model or Project access denied. This API Key does not have access to this specific model (often happens with Veo or Imagen on free keys).");
+    if (errorMsg.includes("API key not valid")) {
+      throw new AuthError("API ključ nije validan. Molimo odaberite validan ključ.");
     }
 
     throw err;
@@ -120,11 +133,12 @@ export class GeminiService {
       const ai = this.getAI();
       await ai.models.generateContent({
         model: model,
-        contents: "test",
-        config: { maxOutputTokens: 1 }
+        contents: "test connection",
+        config: { maxOutputTokens: 5 }
       });
       return true;
     } catch (e) {
+      console.warn(`Test za ${model} nije uspeo:`, e);
       return false;
     }
   }
@@ -149,33 +163,54 @@ export class GeminiService {
       for (const part of response.candidates?.[0]?.content?.parts || []) {
         if (part.inlineData) return `data:image/png;base64,${part.inlineData.data}`;
       }
-      throw new Error("No image data received");
+      throw new Error("Nema podataka o slici od modela.");
     } catch (err) {
       return this.handleApiError(err);
     }
   }
 
-  static async generateVideo(prompt: string, resolution: '720p' | '1080p', aspectRatio: '16:9' | '9:16', useHighQualityModel: boolean, sourceImage?: string, onProgress?: (msg: string) => void): Promise<string> {
+  static async generateVideo(
+    prompt: string, 
+    resolution: '720p' | '1080p', 
+    aspectRatio: '16:9' | '9:16', 
+    useHighQualityModel: boolean, 
+    sourceImage?: string, 
+    onProgress?: (msg: string) => void
+  ): Promise<string> {
     try {
       const ai = this.getAI();
       const modelName = useHighQualityModel ? 'veo-3.1-generate-preview' : 'veo-3.1-fast-generate-preview';
-      if (onProgress) onProgress(`Waking up Veo engine...`);
-      const config: any = {
+      
+      if (onProgress) onProgress(`Pokretanje ${modelName} motora...`);
+      
+      const generationParams: any = {
         model: modelName,
         prompt: prompt || 'Animate this with cinematic motion',
-        config: { numberOfVideos: 1, resolution: resolution, aspectRatio: aspectRatio }
+        config: { numberOfVideos: 1, resolution, aspectRatio }
       };
+
       if (sourceImage) {
-        config.image = { imageBytes: sourceImage.split(',')[1], mimeType: 'image/png' };
+        const [header, data] = sourceImage.split(';base64,');
+        generationParams.image = { 
+          imageBytes: data, 
+          mimeType: header.split(':')[1] || 'image/png' 
+        };
       }
-      let operation = await ai.models.generateVideos(config);
+
+      let operation = await ai.models.generateVideos(generationParams);
+      
       while (!operation.done) {
         await new Promise(resolve => setTimeout(resolve, 10000));
         operation = await ai.operations.getVideosOperation({ operation: operation });
-        if (onProgress) onProgress("Synthesizing temporal consistency...");
+        if (onProgress) onProgress("Sinteza temporalne konzistentnosti...");
       }
+
       const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
+      if (!downloadLink) throw new Error("Generisanje videa završeno ali link nije vraćen.");
+
       const response = await fetch(`${downloadLink}&key=${process.env.API_KEY}`);
+      if (!response.ok) throw new Error(`Greška pri preuzimanju videa: ${response.statusText}`);
+      
       const blob = await response.blob();
       return URL.createObjectURL(blob);
     } catch (err) {
@@ -183,14 +218,22 @@ export class GeminiService {
     }
   }
 
-  static async connectLive(callbacks: { onOpen?: () => void; onMessage?: (message: LiveServerMessage) => void; onError?: (e: any) => void; onClose?: (e: any) => void; }) {
+  static async connectLive(callbacks: { 
+    onOpen?: () => void; 
+    onMessage?: (message: LiveServerMessage) => void; 
+    onError?: (e: any) => void; 
+    onClose?: (e: any) => void; 
+  }) {
     const ai = this.getAI();
     return ai.live.connect({
       model: 'gemini-2.5-flash-native-audio-preview-12-2025',
       callbacks: {
         onopen: callbacks.onOpen || (() => {}),
         onmessage: callbacks.onMessage || (() => {}),
-        onerror: (e) => { this.handleApiError(e).catch(() => {}); if (callbacks.onError) callbacks.onError(e); },
+        onerror: (e) => { 
+          this.handleApiError(e).catch(() => {}); 
+          if (callbacks.onError) callbacks.onError(e); 
+        },
         onclose: callbacks.onClose || (() => {}),
       },
       config: {
