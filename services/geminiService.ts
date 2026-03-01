@@ -1,20 +1,30 @@
-// Existing connectLive method
-...
+// Gemini Service Implementation
 
-// New methods added after connectLive
+class GeminiService {
+  // Connects to the live service with Gemini 1.5 Flash support
+  connectLive() {
+    // Connection logic for Gemini 1.5 Flash
+    console.log('Connecting live with Gemini 1.5 Flash...');
+    // Add implementation here
+  }
 
-typescript
-analyzeCode(): void {
-    // Implementation for analyzing code
+  // Analyzes the given code
+  analyzeCode(code: string) {
     console.log('Analyzing code...');
-},
+    // Add analysis logic here
+  }
 
-generateDocumentation(): void {
-    // Implementation for generating documentation
+  // Generates documentation for the given code
+  generateDocumentation(code: string) {
     console.log('Generating documentation...');
-},
+    // Add documentation generation logic here
+  }
 
-optimizeCode(): void {
-    // Implementation for optimizing code
+  // Optimizes the given code
+  optimizeCode(code: string) {
     console.log('Optimizing code...');
+    // Add optimization logic here
+  }
 }
+
+export default GeminiService;
